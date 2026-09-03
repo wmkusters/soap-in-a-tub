@@ -4036,6 +4036,7 @@ dependencies = [
  "anyhow",
  "kiss3d",
  "nalgebra",
+ "rand 0.10.2",
  "rapier2d",
  "rapier_testbed2d",
  "salva2d",
