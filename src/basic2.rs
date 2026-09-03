@@ -18,11 +18,13 @@ const SMOOTHING_FACTOR: f32 = 2.0;
 // Soap grid.
 const SOAP_COLS: usize = 40;
 const SOAP_ROWS: usize = 12;
-const SOAP_CELL_HALF: f32 = 0.025;
+const SOAP_CELL_HALF: f32 = 0.05;
 const SOAP_CELL_SIZE: f32 = SOAP_CELL_HALF * 2.0;
-const SOAP_MIN_HALF: f32 = 0.005;
+const SOAP_MIN_HALF: f32 = 0.01;
 // How fast a wet cell shrinks (half-extent lost per second of contact). Slow on purpose.
 const SOAP_SHRINK_RATE: f32 = 0.003;
+// Free-floating (detached) cells dissolve much faster than ones still attached to the bar.
+const SOAP_FREE_SHRINK_MULTIPLIER: f32 = 10.0;
 // Decouple probability per second is (force magnitude * this coefficient).
 const SOAP_DECOUPLE_COEFF: f32 = 0.05;
 
@@ -34,33 +36,62 @@ struct SoapCell {
     half_extent: f32,
     wet_time: f32,
     attached: bool,
+    dissolved: bool,
 }
 
-/// Break a cell off the parent soap body: swap its collider/boundary for a
-/// fresh pair on a brand new dynamic body placed at the cell's current pose.
-fn detach_soap_cell(
+/// Fully erode a cell once it shrinks past `SOAP_MIN_HALF`: drop its salva coupling/boundary
+/// and remove it from the physics world. An attached cell only loses its own collider (the
+/// shared soap body and its other cells stay put); a detached cell's private body is removed
+/// too, since nothing else references it.
+fn dissolve_soap_cell(
     cell: &mut SoapCell,
     world: &mut PhysicsWorld,
     fluids_pipeline: &mut FluidsPipeline,
 ) {
+    fluids_pipeline.coupling.unregister_coupling(cell.collider_handle);
+    fluids_pipeline.liquid_world.remove_boundary(cell.boundary_handle);
+
+    if cell.attached {
+        world.colliders.remove(
+            cell.collider_handle,
+            &mut world.islands,
+            &mut world.bodies,
+            true,
+        );
+    } else if let Some(body_handle) = world
+        .colliders
+        .get(cell.collider_handle)
+        .and_then(|c| c.parent())
+    {
+        world.bodies.remove(
+            body_handle,
+            &mut world.islands,
+            &mut world.colliders,
+            &mut world.impulse_joints,
+            &mut world.multibody_joints,
+            true,
+        );
+    }
+
+    cell.dissolved = true;
+}
+
+/// Break a cell off the parent soap body by reparenting its *existing* collider onto a
+/// brand new free-standing dynamic body, in place.
+///
+/// Earlier version removed the old collider and inserted a fresh one, which turned out to
+/// be why detached cells went invisible: rapier_testbed2d's GraphicsManager only registers
+/// render nodes for colliders it saw at `set_world()` (or a full RESET_WORLD_GRAPHICS
+/// rescan) — a collider inserted later via raw `insert_with_parent` never gets a node, so
+/// it's still simulated (we confirmed via velocity logging it wasn't being launched) but
+/// never drawn. Reparenting keeps the same `ColliderHandle`, which the renderer already has
+/// a node for (it re-reads that handle's live position every frame), and also keeps salva's
+/// existing coupling/boundary registration valid, since that's keyed on the same handle too.
+fn detach_soap_cell(cell: &mut SoapCell, world: &mut PhysicsWorld) {
     let Some(collider) = world.colliders.get(cell.collider_handle) else {
         return;
     };
     let world_pos = *collider.position();
-    // Shrink a hair on detach: the cell was tiling edge-to-edge with its still-attached
-    // neighbors (zero clearance), and spawning a brand new dynamic body exactly touching
-    // them is a classic way to get a tiny floating-point overlap that the contact solver
-    // "resolves" by launching the new body off-screen in one step. A small margin avoids it.
-    let half_extent = cell.half_extent * 0.9;
-
-    fluids_pipeline.coupling.unregister_coupling(cell.collider_handle);
-    fluids_pipeline.liquid_world.remove_boundary(cell.boundary_handle);
-    world.colliders.remove(
-        cell.collider_handle,
-        &mut world.islands,
-        &mut world.bodies,
-        true,
-    );
 
     let new_body = RigidBodyBuilder::dynamic()
         .pose(world_pos)
@@ -68,24 +99,18 @@ fn detach_soap_cell(
         .angvel(0.0)
         .build();
     let new_body_handle: RigidBodyHandle = world.bodies.insert(new_body);
-    let new_collider = ColliderBuilder::cuboid(half_extent, half_extent).build();
-    let new_co_handle =
-        world
-            .colliders
-            .insert_with_parent(new_collider, new_body_handle, &mut world.bodies);
 
-    let new_bo_handle = fluids_pipeline
-        .liquid_world
-        .add_boundary(Boundary::new(Vec::new(), InteractionGroups::default()));
-    fluids_pipeline.coupling.register_coupling(
-        new_bo_handle,
-        new_co_handle,
-        ColliderSampling::DynamicContactSampling,
-    );
+    world
+        .colliders
+        .set_parent(cell.collider_handle, Some(new_body_handle), &mut world.bodies);
 
-    cell.collider_handle = new_co_handle;
-    cell.boundary_handle = new_bo_handle;
-    cell.half_extent = half_extent;
+    // `set_parent` keeps the collider's old local offset relative to its *previous* parent
+    // (that's the whole grid-cell offset within the old soap body) — re-zero it now that the
+    // new body already sits exactly at the collider's current world pose, or it'll jump.
+    if let Some(collider) = world.colliders.get_mut(cell.collider_handle) {
+        collider.set_position_wrt_parent(na::Isometry2::identity().into());
+    }
+
     cell.attached = false;
 }
 
@@ -94,7 +119,7 @@ pub async fn run(viewer: &mut TestbedViewer) -> anyhow::Result<()> {
      * World
      */
     let mut world = PhysicsWorld::new();
-    world.gravity = (Vector2::y() * -20.81).into();
+    world.gravity = (Vector2::y() * -9.81).into();
     world.integration_parameters.dt = 1.0 / 200.0;
 
     let mut plugin = FluidsTestbedPlugin::new();
@@ -184,6 +209,7 @@ pub async fn run(viewer: &mut TestbedViewer) -> anyhow::Result<()> {
                 half_extent: SOAP_CELL_HALF,
                 wet_time: 0.0,
                 attached: true,
+                dissolved: false,
             });
         }
     }
@@ -241,21 +267,59 @@ pub async fn run(viewer: &mut TestbedViewer) -> anyhow::Result<()> {
                     continue;
                 };
 
-                // Wet cells slowly shrink.
+                // Wet cells slowly shrink; detached ones dissolve much faster. Once a cell
+                // erodes past SOAP_MIN_HALF it's removed from the sim entirely.
                 cell.wet_time += dt;
-                if cell.half_extent > SOAP_MIN_HALF {
-                    cell.half_extent = (cell.half_extent - SOAP_SHRINK_RATE * dt).max(SOAP_MIN_HALF);
-                    if let Some(collider) = world.colliders.get_mut(cell.collider_handle) {
-                        collider.set_shape(SharedShape::cuboid(cell.half_extent, cell.half_extent));
-                    }
+                let rate = if cell.attached {
+                    SOAP_SHRINK_RATE
+                } else {
+                    SOAP_SHRINK_RATE * SOAP_FREE_SHRINK_MULTIPLIER
+                };
+                cell.half_extent -= rate * dt;
+                if cell.half_extent <= SOAP_MIN_HALF {
+                    dissolve_soap_cell(cell, &mut world, plugin.pipeline_mut());
+                    continue;
+                }
+                if let Some(collider) = world.colliders.get_mut(cell.collider_handle) {
+                    collider.set_shape(SharedShape::cuboid(cell.half_extent, cell.half_extent));
                 }
 
                 // Chance to snap off the parent group, scaled by force and time.
                 if cell.attached {
                     let decouple_chance = force.norm() * SOAP_DECOUPLE_COEFF * dt;
                     if rng.random::<f32>() < decouple_chance {
-                        detach_soap_cell(cell, &mut world, plugin.pipeline_mut());
+                        detach_soap_cell(cell, &mut world);
                     }
+                }
+            }
+            soap_cells.retain(|cell| !cell.dissolved);
+
+            if steps % 20 == 0 {
+                let mut detached_count = 0;
+                let mut fastest: Option<(usize, f32)> = None;
+                for (i, cell) in soap_cells.iter().enumerate() {
+                    if cell.attached {
+                        continue;
+                    }
+                    detached_count += 1;
+                    let speed = world
+                        .colliders
+                        .get(cell.collider_handle)
+                        .and_then(|c| c.parent())
+                        .and_then(|body_handle| world.bodies.get(body_handle))
+                        .map(|body| {
+                            let v = body.linvel();
+                            (v.x * v.x + v.y * v.y).sqrt()
+                        })
+                        .unwrap_or(0.0);
+                    if fastest.map_or(true, |(_, s)| speed > s) {
+                        fastest = Some((i, speed));
+                    }
+                }
+                if let Some((i, speed)) = fastest {
+                    println!(
+                        "detached cells: {detached_count}, fastest: cell {i} at {speed:.2} m/s"
+                    );
                 }
             }
         }
