@@ -1,0 +1,20 @@
+[package]
+name = "soap-in-the-tub"
+version = "0.0.1"
+authors = [ "Bill Kusters <wmkusters@gmail.com>" ]
+edition = "2024"
+
+[features]
+default = ["parallel"]
+parallel = ["rapier2d/parallel", "rapier_testbed2d/parallel", "salva2d/parallel"]
+
+[dependencies]
+anyhow = "1"
+nalgebra = "0.35"
+rapier2d = "0.35.1"
+rapier_testbed2d = "0.35.1"
+kiss3d = { version = "0.45", features = ["rt_switcher"] }
+
+[dependencies.salva2d]
+version = "0.10"
+features = ["rapier", "rapier-testbed", "sampling"]

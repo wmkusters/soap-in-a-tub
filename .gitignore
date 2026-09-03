@@ -1,0 +1,12 @@
+/target
+
+# rapier_testbed UI/camera state autosaved on exit — local to each run, not project config
+testbed_state_*.autosave.json
+
+# OS
+.DS_Store
+
+# Editors
+.vscode/
+.idea/
+*.swp
