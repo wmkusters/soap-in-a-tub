@@ -65,37 +65,30 @@ pub async fn run(viewer: &mut TestbedViewer) -> anyhow::Result<()> {
     );
 
     /*
-     * Create the dynamic rigid-bodies.
+     * Soap (fixed rigid body, stuck to the floor).
      */
-    // let mut build_rigid_body_with_coupling =
-    //     |world: &mut PhysicsWorld, x, y, collider: Collider| {
-    //         let samples =
-    //             salva2d::sampling::shape_surface_ray_sample(collider.shape(), PARTICLE_RADIUS)
-    //                 .unwrap();
-    //         let rb = RigidBodyBuilder::dynamic()
-    //             .translation(Vector2::new(x, y).into())
-    //             .build();
-    //         let rb_handle = world.bodies.insert(rb);
-    //         let co_handle =
-    //             world
-    //                 .colliders
-    //                 .insert_with_parent(collider, rb_handle, &mut world.bodies);
-    //         let bo_handle = fluids_pipeline
-    //             .liquid_world
-    //             .add_boundary(Boundary::new(Vec::new(), InteractionGroups::default()));
-    //         fluids_pipeline.coupling.register_coupling(
-    //             bo_handle,
-    //             co_handle,
-    //             ColliderSampling::StaticSampling(samples.clone()),
-    //         );
-    //     };
+    let soap_collider = ColliderBuilder::cuboid(1.0, 0.3).build();
+    let soap_samples =
+        salva2d::sampling::shape_surface_ray_sample(soap_collider.shape(), PARTICLE_RADIUS)
+            .unwrap();
 
-    // let co1 = ColliderBuilder::cuboid(rad, rad).density(0.8).build();
-    // let co2 = ColliderBuilder::ball(rad).density(0.8).build();
-    // let co3 = ColliderBuilder::capsule_y(rad, rad).density(0.8).build();
-    // build_rigid_body_with_coupling(&mut world, 0.0, 10.0, co1);
-    // build_rigid_body_with_coupling(&mut world, -2.0, 10.0, co2);
-    // build_rigid_body_with_coupling(&mut world, 2.0, 10.5, co3);
+    let soap_body = RigidBodyBuilder::fixed()
+        .translation(Vector2::new(0.0, 0.5).into())
+        .build();
+    let soap_body_handle = world.bodies.insert(soap_body);
+    let soap_co_handle =
+        world
+            .colliders
+            .insert_with_parent(soap_collider, soap_body_handle, &mut world.bodies);
+    let soap_bo_handle = fluids_pipeline
+        .liquid_world
+        .add_boundary(Boundary::new(Vec::new(), InteractionGroups::default()));
+    fluids_pipeline.coupling.register_coupling(
+        soap_bo_handle,
+        soap_co_handle,
+        ColliderSampling::StaticSampling(soap_samples),
+    );
+
 
     /*
      * Set up the viewer and run the simulation.
