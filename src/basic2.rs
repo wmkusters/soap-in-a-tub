@@ -12,7 +12,10 @@ use salva2d::object::{Boundary, BoundaryHandle, Fluid};
 use salva2d::solver::XSPHViscosity;
 use std::f32;
 
-const PARTICLE_RADIUS: f32 = 0.1;
+// Kept smaller than the soap grid's starting cell half-extent (~0.05, see
+// soap_grid_dims below) so SOAP_MIN_HALF still leaves cells room to shrink before
+// dissolving, instead of every cell starting out already below the threshold.
+const PARTICLE_RADIUS: f32 = 0.03;
 const SMOOTHING_FACTOR: f32 = 2.0;
 
 const NUM_PARTICLES_SPAWN: usize = 2;
@@ -22,7 +25,10 @@ const NUM_PARTICLES_SPAWN: usize = 2;
 const SOAP_WIDTH: f32 = 4.0;
 const SOAP_HEIGHT: f32 = 1.2;
 const SOAP_NUM_CELLS: usize = 480;
-const SOAP_MIN_HALF: f32 = 0.01;
+// Dissolve a cell once it shrinks to roughly a particle radius, not smaller — solids
+// much smaller than PARTICLE_RADIUS don't get dense enough SPH boundary sampling and
+// let fluid particles leak straight through them.
+const SOAP_MIN_HALF: f32 = PARTICLE_RADIUS;
 // Water in this sim has density 1.0 (see Fluid::new below); real soap runs slightly
 // denser (~1.1), so this is enough to make it sink rather than float.
 const SOAP_DENSITY: f32 = 1.1;
