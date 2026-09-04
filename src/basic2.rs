@@ -17,11 +17,11 @@ const SMOOTHING_FACTOR: f32 = 2.0;
 
 const NUM_PARTICLES_SPAWN: usize = 2;
 
-// Soap grid.
-const SOAP_COLS: usize = 40;
-const SOAP_ROWS: usize = 12;
-const SOAP_CELL_HALF: f32 = 0.05;
-const SOAP_CELL_SIZE: f32 = SOAP_CELL_HALF * 2.0;
+// Soap grid, sized in meters. Rows/cols are derived (see `soap_grid_dims`) from these
+// plus a target cell count, keeping cells square.
+const SOAP_WIDTH: f32 = 4.0;
+const SOAP_HEIGHT: f32 = 1.2;
+const SOAP_NUM_CELLS: usize = 480;
 const SOAP_MIN_HALF: f32 = 0.01;
 // Water in this sim has density 1.0 (see Fluid::new below); real soap runs slightly
 // denser (~1.1), so this is enough to make it sink rather than float.
@@ -119,6 +119,17 @@ fn detach_soap_cell(cell: &mut SoapCell, world: &mut PhysicsWorld) {
     cell.attached = false;
 }
 
+/// Pick a (cols, rows, cell_half_extent) grid that packs roughly `target_cells` square
+/// cells into a `width` x `height` bar. Cols are sized to fit `width` exactly; rows only
+/// approximate `height`, since cell count is an integer and cells must stay square.
+fn soap_grid_dims(width: f32, height: f32, target_cells: usize) -> (usize, usize, f32) {
+    let cell_size = (width * height / target_cells as f32).sqrt();
+    let cols = (width / cell_size).round().max(1.0) as usize;
+    let rows = (height / cell_size).round().max(1.0) as usize;
+    let cell_half = width / cols as f32 / 2.0;
+    (cols, rows, cell_half)
+}
+
 pub async fn run(viewer: &mut TestbedViewer) -> anyhow::Result<()> {
     /*
      * World
@@ -195,22 +206,26 @@ pub async fn run(viewer: &mut TestbedViewer) -> anyhow::Result<()> {
      * when its parent body is dynamic (see fluids_pipeline.rs::update_boundaries).
      */
     let soap_body = RigidBodyBuilder::dynamic()
-        .translation(Vector2::new(0.0, 0.75).into())
-        //.lock_translations()
-        // .lock_rotations()
+        .translation(Vector2::new(0.0, 0.61).into())
+        .lock_translations()
+        .lock_rotations()
         .build();
     let soap_body_handle = world.bodies.insert(soap_body);
 
+    let (soap_cols, soap_rows, soap_cell_half) =
+        soap_grid_dims(SOAP_WIDTH, SOAP_HEIGHT, SOAP_NUM_CELLS);
+    let soap_cell_size = soap_cell_half * 2.0;
+
     let mut soap_cells = Vec::new();
-    let soap_half_width = SOAP_COLS as f32 * SOAP_CELL_HALF;
-    let soap_half_height = SOAP_ROWS as f32 * SOAP_CELL_HALF;
+    let soap_half_width = soap_cols as f32 * soap_cell_half;
+    let soap_half_height = soap_rows as f32 * soap_cell_half;
 
-    for row in 0..SOAP_ROWS {
-        for col in 0..SOAP_COLS {
-            let local_x = -soap_half_width + SOAP_CELL_HALF + col as f32 * SOAP_CELL_SIZE;
-            let local_y = -soap_half_height + SOAP_CELL_HALF + row as f32 * SOAP_CELL_SIZE;
+    for row in 0..soap_rows {
+        for col in 0..soap_cols {
+            let local_x = -soap_half_width + soap_cell_half + col as f32 * soap_cell_size;
+            let local_y = -soap_half_height + soap_cell_half + row as f32 * soap_cell_size;
 
-            let collider = ColliderBuilder::cuboid(SOAP_CELL_HALF, SOAP_CELL_HALF)
+            let collider = ColliderBuilder::cuboid(soap_cell_half, soap_cell_half)
                 .translation(Vector2::new(local_x, local_y).into())
                 .density(SOAP_DENSITY)
                 .build();
@@ -231,7 +246,7 @@ pub async fn run(viewer: &mut TestbedViewer) -> anyhow::Result<()> {
             soap_cells.push(SoapCell {
                 collider_handle: co_handle,
                 boundary_handle: bo_handle,
-                half_extent: SOAP_CELL_HALF,
+                half_extent: soap_cell_half,
                 wet_time: 0.0,
                 attached: true,
                 dissolved: false,
@@ -268,9 +283,6 @@ pub async fn run(viewer: &mut TestbedViewer) -> anyhow::Result<()> {
                 let (particle_spawn_positions, velocities) = spawn_particles(NUM_PARTICLES_SPAWN);
                 fl.add_particles(&particle_spawn_positions, Some(&velocities));
                 let so_pos = world.bodies.get(soap_body_handle).unwrap().translation();
-                println!(
-                    "soap pos: {so_pos}"
-                );
             }
             world.step();
             plugin.step(&mut world);
@@ -366,7 +378,7 @@ fn spawn_particles(n: usize) -> (Vec<Vector2<f32>>, Vec<Vector2<f32>>) {
     for _ in 0..n {
         let p_jitter = rng.random_range(-0.5..0.5);
         particle_spawn_positions.push(Vector2::new(-2.5 + p_jitter, 10.0 + p_jitter));
-        velocities.push(Vector2::new(2.0, -4.0));
+        velocities.push(Vector2::new(2.0, -8.0));
     }
     return (particle_spawn_positions, velocities)
 }
