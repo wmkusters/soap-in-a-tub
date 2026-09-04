@@ -2,10 +2,10 @@ extern crate nalgebra as na;
 
 use na::{Vector2, Vector3};
 use rand::RngExt;
+use rapier_testbed2d::TestbedViewer;
 use rapier2d::dynamics::{RigidBodyBuilder, RigidBodyHandle};
 use rapier2d::geometry::{ColliderBuilder, ColliderHandle, SharedShape};
 use rapier2d::pipeline::PhysicsWorld;
-use rapier_testbed2d::TestbedViewer;
 use salva2d::integrations::rapier::{ColliderSampling, FluidsPipeline, FluidsTestbedPlugin};
 use salva2d::object::interaction_groups::InteractionGroups;
 use salva2d::object::{Boundary, BoundaryHandle, Fluid};
@@ -54,8 +54,12 @@ fn dissolve_soap_cell(
     world: &mut PhysicsWorld,
     fluids_pipeline: &mut FluidsPipeline,
 ) {
-    fluids_pipeline.coupling.unregister_coupling(cell.collider_handle);
-    fluids_pipeline.liquid_world.remove_boundary(cell.boundary_handle);
+    fluids_pipeline
+        .coupling
+        .unregister_coupling(cell.collider_handle);
+    fluids_pipeline
+        .liquid_world
+        .remove_boundary(cell.boundary_handle);
 
     if cell.attached {
         world.colliders.remove(
@@ -97,9 +101,11 @@ fn detach_soap_cell(cell: &mut SoapCell, world: &mut PhysicsWorld) {
         .build();
     let new_body_handle: RigidBodyHandle = world.bodies.insert(new_body);
 
-    world
-        .colliders
-        .set_parent(cell.collider_handle, Some(new_body_handle), &mut world.bodies);
+    world.colliders.set_parent(
+        cell.collider_handle,
+        Some(new_body_handle),
+        &mut world.bodies,
+    );
 
     // `set_parent` keeps the collider's old local offset relative to its *previous* parent
     // (that's the whole grid-cell offset within the old soap body) — re-zero it now that the
@@ -132,7 +138,7 @@ fn spawn_particles(n: usize) -> (Vec<Vector2<f32>>, Vec<Vector2<f32>>) {
         particle_spawn_positions.push(Vector2::new(-2.5 + p_jitter, 10.0 + p_jitter));
         velocities.push(Vector2::new(2.0, -8.0));
     }
-    return (particle_spawn_positions, velocities)
+    return (particle_spawn_positions, velocities);
 }
 
 pub async fn run(viewer: &mut TestbedViewer) -> anyhow::Result<()> {
@@ -148,7 +154,12 @@ pub async fn run(viewer: &mut TestbedViewer) -> anyhow::Result<()> {
 
     // Liquid.
     let viscosity = XSPHViscosity::new(0.1, 0.5);
-    let mut fluid = Fluid::new(Vec::new(), PARTICLE_RADIUS, 1.0, InteractionGroups::default());
+    let mut fluid = Fluid::new(
+        Vec::new(),
+        PARTICLE_RADIUS,
+        1.0,
+        InteractionGroups::default(),
+    );
     fluid.nonpressure_forces.push(Box::new(viscosity.clone()));
     let fluid_handle = fluids_pipeline.liquid_world.add_fluid(fluid);
     plugin.set_fluid_color(fluid_handle, Vector3::new(0.6, 0.8, 0.5));
@@ -374,4 +385,3 @@ pub async fn run(viewer: &mut TestbedViewer) -> anyhow::Result<()> {
 
     Ok(())
 }
-
