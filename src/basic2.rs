@@ -37,7 +37,7 @@ const SOAP_SHRINK_RATE: f32 = 0.003;
 // Free-floating (detached) cells dissolve much faster than ones still attached to the bar.
 const SOAP_FREE_SHRINK_MULTIPLIER: f32 = 10.0;
 // Decouple probability per second is (force magnitude * this coefficient).
-const SOAP_DECOUPLE_COEFF: f32 = 0.05;
+const SOAP_DECOUPLE_COEFF: f32 = 0.001;
 
 /// One square chunk of the soap bar. Starts parented to the shared soap body;
 /// once decoupled it gets its own free-standing body.
@@ -334,7 +334,7 @@ pub async fn run(viewer: &mut TestbedViewer) -> anyhow::Result<()> {
 
                 // Chance to snap off the parent group, scaled by force and time.
                 if cell.attached {
-                    let decouple_chance = force.norm() * SOAP_DECOUPLE_COEFF * dt;
+                    let decouple_chance = force.norm() * SOAP_DECOUPLE_COEFF;
                     if rng.random::<f32>() < decouple_chance {
                         detach_soap_cell(cell, &mut world);
                     }
