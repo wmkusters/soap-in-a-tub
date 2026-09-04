@@ -52,7 +52,7 @@ struct SoapCell {
 }
 
 /// Delete a cell once it shrinks past `SOAP_DISSOLVE_THRESHOLD`: drop its salva coupling/boundary
-/// and remove it from the physics world. An attached cell only loses its own collider a detached
+/// and remove it from the physics world. An attached cell only loses its own collider; a detached
 /// cell's private body is removed.
 fn dissolve_soap_cell(
     cell: &mut SoapCell,
@@ -91,8 +91,8 @@ fn dissolve_soap_cell(
     cell.dissolved = true;
 }
 
-/// Break a cell off the parent soap body by reparenting its *existing* collider onto a
-/// brand new free-standing dynamic body, in place.
+/// Break a cell off the parent soap body by reparenting its existing collider onto
+/// a newly created rigid body.
 fn detach_soap_cell(cell: &mut SoapCell, world: &mut PhysicsWorld) {
     let Some(collider) = world.colliders.get(cell.collider_handle) else {
         return;
@@ -112,9 +112,7 @@ fn detach_soap_cell(cell: &mut SoapCell, world: &mut PhysicsWorld) {
         &mut world.bodies,
     );
 
-    // `set_parent` keeps the collider's old local offset relative to its *previous* parent
-    // (that's the whole grid-cell offset within the old soap body) — re-zero it now that the
-    // new body already sits exactly at the collider's current world pose, or it'll jump.
+    // this collider had some offset relative to the previous whole soap parent; zero it out here
     if let Some(collider) = world.colliders.get_mut(cell.collider_handle) {
         collider.set_position_wrt_parent(na::Isometry2::identity().into());
     }
@@ -122,9 +120,7 @@ fn detach_soap_cell(cell: &mut SoapCell, world: &mut PhysicsWorld) {
     cell.attached = false;
 }
 
-/// Pick a (cols, rows, cell_half_extent) grid that packs roughly `target_cells` square
-/// cells into a `width` x `height` bar. Cols are sized to fit `width` exactly; rows only
-/// approximate `height`, since cell count is an integer and cells must stay square.
+/// Compute the number of columns, rows, and the half-extent of individual soap cells.
 fn soap_grid_dims(width: f32, height: f32, target_cells: usize) -> (usize, usize, f32) {
     let cell_size = (width * height / target_cells as f32).sqrt();
     let cols = (width / cell_size).round().max(1.0) as usize;
