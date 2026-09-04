@@ -7,7 +7,7 @@ mod soap;
 
 #[kiss3d::main]
 pub async fn main() {
-    let mut viewer = TestbedViewer::new(vec![ExampleEntry::new("Fluids", "Basic")]).await;
+    let mut viewer = TestbedViewer::new(vec![ExampleEntry::new("Fluids", "Soap")]).await;
 
     // soap owns its physics state and render loop; this outer loop just
     // re-runs it after a UI-triggered restart.
