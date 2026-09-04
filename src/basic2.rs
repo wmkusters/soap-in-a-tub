@@ -36,6 +36,12 @@ const SOAP_FREE_SHRINK_MULTIPLIER: f32 = 10.0;
 // Decouple probability per second is (force magnitude * this coefficient).
 const SOAP_DECOUPLE_COEFF: f32 = 0.001;
 
+const TUB_WIDTH: f32 = 20.0;
+const TUB_HEIGHT: f32 = 10.0;
+const WALL_THICKNESS: f32 = 0.5;
+const FLOOR_Y: f32 = 0.0;
+const FLOOR_HALF_THICKNESS: f32 = WALL_THICKNESS / 2.0;
+
 struct SoapCell {
     collider_handle: ColliderHandle,
     boundary_handle: BoundaryHandle,
@@ -153,65 +159,55 @@ pub async fn run(viewer: &mut TestbedViewer) -> anyhow::Result<()> {
     let mut fluids_pipeline = FluidsPipeline::new(PARTICLE_RADIUS, SMOOTHING_FACTOR);
 
     // Liquid.
-    let viscosity = XSPHViscosity::new(0.1, 0.5);
-    let mut fluid = Fluid::new(
+    let water_viscosity = XSPHViscosity::new(0.1, 0.5);
+    let mut water = Fluid::new(
         Vec::new(),
         PARTICLE_RADIUS,
-        1.0,
+        1.0, // density of water
         InteractionGroups::default(),
     );
-    fluid.nonpressure_forces.push(Box::new(viscosity.clone()));
-    let fluid_handle = fluids_pipeline.liquid_world.add_fluid(fluid);
+    water
+        .nonpressure_forces
+        .push(Box::new(water_viscosity.clone()));
+    let fluid_handle = fluids_pipeline.liquid_world.add_fluid(water);
     plugin.set_fluid_color(fluid_handle, Vector3::new(0.6, 0.8, 0.5));
-
-    /*
-     * Ground: an enclosing tub built from one compound collider (floor + two side
-     * walls) on a single fixed body, instead of a heightfield. The old heightfield
-     * faked walls by spiking its end cells up to y=20 over one narrow segment (a
-     * steep cliff, not an actual vertical wall); real cuboids give true vertical
-     * sides. Open at the top, since particles are spawned falling in from above.
-     */
-    let tub_width = 20.0;
-    let tub_height = 10.0;
-    let wall_thickness = 0.5;
-    let floor_y = 0.0;
-    let floor_half_thickness = wall_thickness / 2.0;
 
     let tub_shapes = vec![
         (
-            na::Isometry2::translation(0.0, floor_y - floor_half_thickness).into(),
-            SharedShape::cuboid(tub_width / 2.0 + wall_thickness, floor_half_thickness),
+            na::Isometry2::translation(0.0, FLOOR_Y - FLOOR_HALF_THICKNESS).into(),
+            SharedShape::cuboid(TUB_WIDTH / 2.0 + WALL_THICKNESS, FLOOR_HALF_THICKNESS),
         ),
         (
             na::Isometry2::translation(
-                -tub_width / 2.0 - wall_thickness / 2.0,
-                floor_y + tub_height / 2.0,
+                -TUB_WIDTH / 2.0 - WALL_THICKNESS / 2.0,
+                FLOOR_Y + TUB_HEIGHT / 2.0,
             )
             .into(),
-            SharedShape::cuboid(wall_thickness / 2.0, tub_height / 2.0),
+            SharedShape::cuboid(WALL_THICKNESS / 2.0, TUB_HEIGHT / 2.0),
         ),
         (
             na::Isometry2::translation(
-                tub_width / 2.0 + wall_thickness / 2.0,
-                floor_y + tub_height / 2.0,
+                TUB_WIDTH / 2.0 + WALL_THICKNESS / 2.0,
+                FLOOR_Y + TUB_HEIGHT / 2.0,
             )
             .into(),
-            SharedShape::cuboid(wall_thickness / 2.0, tub_height / 2.0),
+            SharedShape::cuboid(WALL_THICKNESS / 2.0, TUB_HEIGHT / 2.0),
         ),
     ];
 
-    let rigid_body = RigidBodyBuilder::fixed().build();
-    let handle = world.bodies.insert(rigid_body);
-    let collider = ColliderBuilder::new(SharedShape::compound(tub_shapes)).build();
-    let co_handle = world
-        .colliders
-        .insert_with_parent(collider, handle, &mut world.bodies);
-    let bo_handle = fluids_pipeline
+    let tub_body = RigidBodyBuilder::fixed().build();
+    let tub_handle = world.bodies.insert(tub_body);
+    let tub_collider = ColliderBuilder::new(SharedShape::compound(tub_shapes)).build();
+    let tub_collider_handle =
+        world
+            .colliders
+            .insert_with_parent(tub_collider, tub_handle, &mut world.bodies);
+    let tub_fluid_handle = fluids_pipeline
         .liquid_world
         .add_boundary(Boundary::new(Vec::new(), InteractionGroups::default()));
     fluids_pipeline.coupling.register_coupling(
-        bo_handle,
-        co_handle,
+        tub_fluid_handle,
+        tub_collider_handle,
         ColliderSampling::DynamicContactSampling,
     );
 
@@ -276,11 +272,6 @@ pub async fn run(viewer: &mut TestbedViewer) -> anyhow::Result<()> {
     plugin.set_pipeline(fluids_pipeline);
     viewer.set_world(&mut world);
     viewer.look_at(Vector2::new(0.0, 5.5).into(), 50.0);
-
-    // let mut particle_spawn_positions = Vec::new();
-    // particle_spawn_positions.push(Vector2::new(-2.5, 10.0));
-    // let mut velocities = Vec::new();
-    // velocities.push(Vector2::new(2.0, -2.0));
 
     let mut rng = rand::rng();
     let mut steps = 0;
