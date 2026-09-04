@@ -15,12 +15,17 @@ use std::f32;
 const PARTICLE_RADIUS: f32 = 0.1;
 const SMOOTHING_FACTOR: f32 = 2.0;
 
+const NUM_PARTICLES_SPAWN: usize = 2;
+
 // Soap grid.
 const SOAP_COLS: usize = 40;
 const SOAP_ROWS: usize = 12;
 const SOAP_CELL_HALF: f32 = 0.05;
 const SOAP_CELL_SIZE: f32 = SOAP_CELL_HALF * 2.0;
 const SOAP_MIN_HALF: f32 = 0.01;
+// Water in this sim has density 1.0 (see Fluid::new below); real soap runs slightly
+// denser (~1.1), so this is enough to make it sink rather than float.
+const SOAP_DENSITY: f32 = 1.1;
 // How fast a wet cell shrinks (half-extent lost per second of contact). Slow on purpose.
 const SOAP_SHRINK_RATE: f32 = 0.003;
 // Free-floating (detached) cells dissolve much faster than ones still attached to the bar.
@@ -133,25 +138,44 @@ pub async fn run(viewer: &mut TestbedViewer) -> anyhow::Result<()> {
     plugin.set_fluid_color(fluid_handle, Vector3::new(0.6, 0.8, 0.5));
 
     /*
-     * Ground
+     * Ground: an enclosing tub built from one compound collider (floor + two side
+     * walls) on a single fixed body, instead of a heightfield. The old heightfield
+     * faked walls by spiking its end cells up to y=20 over one narrow segment (a
+     * steep cliff, not an actual vertical wall); real cuboids give true vertical
+     * sides. Open at the top, since particles are spawned falling in from above.
      */
-    let ground_size = Vector2::new(10.0, 1.0);
-    let nsubdivs = 50;
+    let tub_width = 20.0;
+    let tub_height = 10.0;
+    let wall_thickness = 0.5;
+    let floor_y = 0.0;
+    let floor_half_thickness = wall_thickness / 2.0;
 
-    let heights: Vec<_> = (0..=nsubdivs)
-        .map(|i| {
-            if i == 0 || i == nsubdivs {
-                20.0
-            } else {
-                0.0
-                //(i as f32 * ground_size.x / (nsubdivs as f32)).cos() * 0.5
-            }
-        })
-        .collect();
+    let tub_shapes = vec![
+        (
+            na::Isometry2::translation(0.0, floor_y - floor_half_thickness).into(),
+            SharedShape::cuboid(tub_width / 2.0 + wall_thickness, floor_half_thickness),
+        ),
+        (
+            na::Isometry2::translation(
+                -tub_width / 2.0 - wall_thickness / 2.0,
+                floor_y + tub_height / 2.0,
+            )
+            .into(),
+            SharedShape::cuboid(wall_thickness / 2.0, tub_height / 2.0),
+        ),
+        (
+            na::Isometry2::translation(
+                tub_width / 2.0 + wall_thickness / 2.0,
+                floor_y + tub_height / 2.0,
+            )
+            .into(),
+            SharedShape::cuboid(wall_thickness / 2.0, tub_height / 2.0),
+        ),
+    ];
 
     let rigid_body = RigidBodyBuilder::fixed().build();
     let handle = world.bodies.insert(rigid_body);
-    let collider = ColliderBuilder::heightfield(heights, ground_size.into()).build();
+    let collider = ColliderBuilder::new(SharedShape::compound(tub_shapes)).build();
     let co_handle = world
         .colliders
         .insert_with_parent(collider, handle, &mut world.bodies);
@@ -171,9 +195,9 @@ pub async fn run(viewer: &mut TestbedViewer) -> anyhow::Result<()> {
      * when its parent body is dynamic (see fluids_pipeline.rs::update_boundaries).
      */
     let soap_body = RigidBodyBuilder::dynamic()
-        .translation(Vector2::new(0.0, 0.5).into())
-        .lock_translations()
-        .lock_rotations()
+        .translation(Vector2::new(0.0, 0.75).into())
+        //.lock_translations()
+        // .lock_rotations()
         .build();
     let soap_body_handle = world.bodies.insert(soap_body);
 
@@ -188,6 +212,7 @@ pub async fn run(viewer: &mut TestbedViewer) -> anyhow::Result<()> {
 
             let collider = ColliderBuilder::cuboid(SOAP_CELL_HALF, SOAP_CELL_HALF)
                 .translation(Vector2::new(local_x, local_y).into())
+                .density(SOAP_DENSITY)
                 .build();
             let co_handle =
                 world
@@ -221,10 +246,10 @@ pub async fn run(viewer: &mut TestbedViewer) -> anyhow::Result<()> {
     viewer.set_world(&mut world);
     viewer.look_at(Vector2::new(0.0, 5.5).into(), 50.0);
 
-    let mut particle_spawn_positions = Vec::new();
-    particle_spawn_positions.push(Vector2::new(-2.5, 10.0));
-    let mut velocities = Vec::new();
-    velocities.push(Vector2::new(2.0, -2.0));
+    // let mut particle_spawn_positions = Vec::new();
+    // particle_spawn_positions.push(Vector2::new(-2.5, 10.0));
+    // let mut velocities = Vec::new();
+    // velocities.push(Vector2::new(2.0, -2.0));
 
     let mut rng = rand::rng();
     let mut steps = 0;
@@ -233,14 +258,19 @@ pub async fn run(viewer: &mut TestbedViewer) -> anyhow::Result<()> {
         plugin.draw(viewer);
 
         if viewer.simulating() {
-            if steps % 20 == 0 {
+            if steps % 5 == 0 {
                 let fl = plugin
                     .pipeline_mut()
                     .liquid_world
                     .fluids_mut()
                     .get_mut(fluid_handle)
                     .unwrap();
+                let (particle_spawn_positions, velocities) = spawn_particles(NUM_PARTICLES_SPAWN);
                 fl.add_particles(&particle_spawn_positions, Some(&velocities));
+                let so_pos = world.bodies.get(soap_body_handle).unwrap().translation();
+                println!(
+                    "soap pos: {so_pos}"
+                );
             }
             world.step();
             plugin.step(&mut world);
@@ -327,4 +357,16 @@ pub async fn run(viewer: &mut TestbedViewer) -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+fn spawn_particles(n: usize) -> (Vec<Vector2<f32>>, Vec<Vector2<f32>>) {
+    let mut rng = rand::rng();
+    let mut particle_spawn_positions = Vec::new();
+    let mut velocities = Vec::new();
+    for _ in 0..n {
+        let p_jitter = rng.random_range(-0.5..0.5);
+        particle_spawn_positions.push(Vector2::new(-2.5 + p_jitter, 10.0 + p_jitter));
+        velocities.push(Vector2::new(2.0, -4.0));
+    }
+    return (particle_spawn_positions, velocities)
 }
