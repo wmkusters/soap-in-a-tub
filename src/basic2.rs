@@ -12,35 +12,30 @@ use salva2d::object::{Boundary, BoundaryHandle, Fluid};
 use salva2d::solver::XSPHViscosity;
 use std::f32;
 
-// Kept smaller than the soap grid's starting cell half-extent (~0.05, see
-// soap_grid_dims below) so SOAP_MIN_HALF still leaves cells room to shrink before
-// dissolving, instead of every cell starting out already below the threshold.
+// Sim parameters
+const DT: f32 = 1.0 / 200.0;
+
+// Simulation size constants, SI units:
 const PARTICLE_RADIUS: f32 = 0.03;
 const SMOOTHING_FACTOR: f32 = 2.0;
+const PARTICLE_SPAWN_COUNT: usize = 2;
 
-const NUM_PARTICLES_SPAWN: usize = 2;
-
-// Soap grid, sized in meters. Rows/cols are derived (see `soap_grid_dims`) from these
-// plus a target cell count, keeping cells square.
 const SOAP_WIDTH: f32 = 4.0;
 const SOAP_HEIGHT: f32 = 1.2;
 const SOAP_NUM_CELLS: usize = 480;
-// Dissolve a cell once it shrinks to roughly a particle radius, not smaller — solids
-// much smaller than PARTICLE_RADIUS don't get dense enough SPH boundary sampling and
-// let fluid particles leak straight through them.
-const SOAP_MIN_HALF: f32 = PARTICLE_RADIUS;
-// Water in this sim has density 1.0 (see Fluid::new below); real soap runs slightly
-// denser (~1.1), so this is enough to make it sink rather than float.
+
+// Size for a cell's half-extent at which a soap cell will be "dissolved",
+// or vanished from the sim.
+const SOAP_DISSOLVE_THRESHOLD: f32 = PARTICLE_RADIUS;
+
 const SOAP_DENSITY: f32 = 1.1;
-// How fast a wet cell shrinks (half-extent lost per second of contact). Slow on purpose.
+// How fast a wet cell shrinks (half-extent lost per second of contact).
 const SOAP_SHRINK_RATE: f32 = 0.003;
 // Free-floating (detached) cells dissolve much faster than ones still attached to the bar.
 const SOAP_FREE_SHRINK_MULTIPLIER: f32 = 10.0;
 // Decouple probability per second is (force magnitude * this coefficient).
 const SOAP_DECOUPLE_COEFF: f32 = 0.001;
 
-/// One square chunk of the soap bar. Starts parented to the shared soap body;
-/// once decoupled it gets its own free-standing body.
 struct SoapCell {
     collider_handle: ColliderHandle,
     boundary_handle: BoundaryHandle,
@@ -50,7 +45,7 @@ struct SoapCell {
     dissolved: bool,
 }
 
-/// Fully erode a cell once it shrinks past `SOAP_MIN_HALF`: drop its salva coupling/boundary
+/// Delete a cell once it shrinks past `SOAP_DISSOLVE_THRESHOLD`: drop its salva coupling/boundary
 /// and remove it from the physics world. An attached cell only loses its own collider (the
 /// shared soap body and its other cells stay put); a detached cell's private body is removed
 /// too, since nothing else references it.
@@ -89,15 +84,6 @@ fn dissolve_soap_cell(
 
 /// Break a cell off the parent soap body by reparenting its *existing* collider onto a
 /// brand new free-standing dynamic body, in place.
-///
-/// Earlier version removed the old collider and inserted a fresh one, which turned out to
-/// be why detached cells went invisible: rapier_testbed2d's GraphicsManager only registers
-/// render nodes for colliders it saw at `set_world()` (or a full RESET_WORLD_GRAPHICS
-/// rescan) — a collider inserted later via raw `insert_with_parent` never gets a node, so
-/// it's still simulated (we confirmed via velocity logging it wasn't being launched) but
-/// never drawn. Reparenting keeps the same `ColliderHandle`, which the renderer already has
-/// a node for (it re-reads that handle's live position every frame), and also keeps salva's
-/// existing coupling/boundary registration valid, since that's keyed on the same handle too.
 fn detach_soap_cell(cell: &mut SoapCell, world: &mut PhysicsWorld) {
     let Some(collider) = world.colliders.get(cell.collider_handle) else {
         return;
@@ -136,13 +122,26 @@ fn soap_grid_dims(width: f32, height: f32, target_cells: usize) -> (usize, usize
     (cols, rows, cell_half)
 }
 
+// Given n, a number of particles to spawn, spawn them at a set position with some velocity.
+fn spawn_particles(n: usize) -> (Vec<Vector2<f32>>, Vec<Vector2<f32>>) {
+    let mut rng = rand::rng();
+    let mut particle_spawn_positions = Vec::new();
+    let mut velocities = Vec::new();
+    for _ in 0..n {
+        let p_jitter = rng.random_range(-0.5..0.5);
+        particle_spawn_positions.push(Vector2::new(-2.5 + p_jitter, 10.0 + p_jitter));
+        velocities.push(Vector2::new(2.0, -8.0));
+    }
+    return (particle_spawn_positions, velocities)
+}
+
 pub async fn run(viewer: &mut TestbedViewer) -> anyhow::Result<()> {
     /*
      * World
      */
     let mut world = PhysicsWorld::new();
     world.gravity = (Vector2::y() * -9.81).into();
-    world.integration_parameters.dt = 1.0 / 200.0;
+    world.integration_parameters.dt = DT;
 
     let mut plugin = FluidsTestbedPlugin::new();
     let mut fluids_pipeline = FluidsPipeline::new(PARTICLE_RADIUS, SMOOTHING_FACTOR);
@@ -286,9 +285,8 @@ pub async fn run(viewer: &mut TestbedViewer) -> anyhow::Result<()> {
                     .fluids_mut()
                     .get_mut(fluid_handle)
                     .unwrap();
-                let (particle_spawn_positions, velocities) = spawn_particles(NUM_PARTICLES_SPAWN);
+                let (particle_spawn_positions, velocities) = spawn_particles(PARTICLE_SPAWN_COUNT);
                 fl.add_particles(&particle_spawn_positions, Some(&velocities));
-                let so_pos = world.bodies.get(soap_body_handle).unwrap().translation();
             }
             world.step();
             plugin.step(&mut world);
@@ -316,7 +314,7 @@ pub async fn run(viewer: &mut TestbedViewer) -> anyhow::Result<()> {
                 };
 
                 // Wet cells slowly shrink; detached ones dissolve much faster. Once a cell
-                // erodes past SOAP_MIN_HALF it's removed from the sim entirely.
+                // erodes past SOAP_DISSOLVE_THRESHOLD it's removed from the sim entirely.
                 cell.wet_time += dt;
                 let rate = if cell.attached {
                     SOAP_SHRINK_RATE
@@ -324,7 +322,7 @@ pub async fn run(viewer: &mut TestbedViewer) -> anyhow::Result<()> {
                     SOAP_SHRINK_RATE * SOAP_FREE_SHRINK_MULTIPLIER
                 };
                 cell.half_extent -= rate * dt;
-                if cell.half_extent <= SOAP_MIN_HALF {
+                if cell.half_extent <= SOAP_DISSOLVE_THRESHOLD {
                     dissolve_soap_cell(cell, &mut world, plugin.pipeline_mut());
                     continue;
                 }
@@ -377,14 +375,3 @@ pub async fn run(viewer: &mut TestbedViewer) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn spawn_particles(n: usize) -> (Vec<Vector2<f32>>, Vec<Vector2<f32>>) {
-    let mut rng = rand::rng();
-    let mut particle_spawn_positions = Vec::new();
-    let mut velocities = Vec::new();
-    for _ in 0..n {
-        let p_jitter = rng.random_range(-0.5..0.5);
-        particle_spawn_positions.push(Vector2::new(-2.5 + p_jitter, 10.0 + p_jitter));
-        velocities.push(Vector2::new(2.0, -8.0));
-    }
-    return (particle_spawn_positions, velocities)
-}
