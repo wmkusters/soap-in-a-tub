@@ -1,6 +1,9 @@
 ## Soap in the Tub
 An attempt at modeling the time evolution of a bar of soap in a tub. The project is written in Rust using the [Rapier](https://rapier.rs/) and [Salva](https://salva.rs/) physics libraries. 
 
+
+![soap](./assets/soap.png)
+
 ## Building and running
 I have only tested building this project on my M2 Mac using Rust's `cargo` tool. A simple Makefile is included and can be used to run the project if `cargo` is installed via `make run`. If built successfully, you should see a window popup to view the simulation visualizer.
 
