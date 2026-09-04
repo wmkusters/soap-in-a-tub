@@ -52,9 +52,8 @@ struct SoapCell {
 }
 
 /// Delete a cell once it shrinks past `SOAP_DISSOLVE_THRESHOLD`: drop its salva coupling/boundary
-/// and remove it from the physics world. An attached cell only loses its own collider (the
-/// shared soap body and its other cells stay put); a detached cell's private body is removed
-/// too, since nothing else references it.
+/// and remove it from the physics world. An attached cell only loses its own collider a detached
+/// cell's private body is removed.
 fn dissolve_soap_cell(
     cell: &mut SoapCell,
     world: &mut PhysicsWorld,
@@ -98,10 +97,10 @@ fn detach_soap_cell(cell: &mut SoapCell, world: &mut PhysicsWorld) {
     let Some(collider) = world.colliders.get(cell.collider_handle) else {
         return;
     };
-    let world_pos = *collider.position();
+    let current_pose = *collider.position();
 
     let new_body = RigidBodyBuilder::dynamic()
-        .pose(world_pos)
+        .pose(current_pose)
         .linvel(Vector2::zeros().into())
         .angvel(0.0)
         .build();
@@ -148,9 +147,6 @@ fn spawn_particles(n: usize) -> (Vec<Vector2<f32>>, Vec<Vector2<f32>>) {
 }
 
 pub async fn run(viewer: &mut TestbedViewer) -> anyhow::Result<()> {
-    /*
-     * World
-     */
     let mut world = PhysicsWorld::new();
     world.gravity = (Vector2::y() * -9.81).into();
     world.integration_parameters.dt = DT;
@@ -169,9 +165,10 @@ pub async fn run(viewer: &mut TestbedViewer) -> anyhow::Result<()> {
     water
         .nonpressure_forces
         .push(Box::new(water_viscosity.clone()));
-    let fluid_handle = fluids_pipeline.liquid_world.add_fluid(water);
-    plugin.set_fluid_color(fluid_handle, Vector3::new(0.6, 0.8, 0.5));
+    let water_handle = fluids_pipeline.liquid_world.add_fluid(water);
+    plugin.set_fluid_color(water_handle, Vector3::new(0.6, 0.8, 0.5));
 
+    // Tub
     let tub_shapes = vec![
         (
             na::Isometry2::translation(0.0, FLOOR_Y - FLOOR_HALF_THICKNESS).into(),
@@ -211,14 +208,11 @@ pub async fn run(viewer: &mut TestbedViewer) -> anyhow::Result<()> {
         ColliderSampling::DynamicContactSampling,
     );
 
-    /*
-     * Soap: a rectangular grid of small square cells, each its own collider
-     * parented to one shared body. Must be `dynamic` (motion locked) rather
-     * than `fixed` — salva only tracks per-cell forces on a coupled boundary
-     * when its parent body is dynamic (see fluids_pipeline.rs::update_boundaries).
-     */
+    // Add the soap bar, a rectangular grid of small square cells, each its own collider
+    // parented to one shared body. Must be dynamic with motion locked for salva to track
+    // per-cell force.
     let soap_body = RigidBodyBuilder::dynamic()
-        .translation(Vector2::new(0.0, 0.61).into())
+        .translation(Vector2::new(0.0, SOAP_HEIGHT / 2.0 + 0.1).into())
         .lock_translations()
         .lock_rotations()
         .build();
@@ -280,12 +274,13 @@ pub async fn run(viewer: &mut TestbedViewer) -> anyhow::Result<()> {
         plugin.draw(viewer);
 
         if viewer.simulating() {
+            // spawn water particles
             if steps % 5 == 0 {
                 let fl = plugin
                     .pipeline_mut()
                     .liquid_world
                     .fluids_mut()
-                    .get_mut(fluid_handle)
+                    .get_mut(water_handle)
                     .unwrap();
                 let (particle_spawn_positions, velocities) = spawn_particles(PARTICLE_SPAWN_COUNT);
                 fl.add_particles(&particle_spawn_positions, Some(&velocities));
@@ -295,6 +290,7 @@ pub async fn run(viewer: &mut TestbedViewer) -> anyhow::Result<()> {
 
             let dt = world.integration_parameters.dt;
             for cell in &mut soap_cells {
+                // compute total force acting on this cell
                 let contact_force = {
                     let liquid_world = &plugin.pipeline_mut().liquid_world;
                     liquid_world
@@ -311,6 +307,7 @@ pub async fn run(viewer: &mut TestbedViewer) -> anyhow::Result<()> {
                         })
                 };
 
+                // skip if no force on cell
                 let Some(force) = contact_force else {
                     continue;
                 };
@@ -332,7 +329,7 @@ pub async fn run(viewer: &mut TestbedViewer) -> anyhow::Result<()> {
                     collider.set_shape(SharedShape::cuboid(cell.half_extent, cell.half_extent));
                 }
 
-                // Chance to snap off the parent group, scaled by force and time.
+                // break a cell off with a probability proportional to total force
                 if cell.attached {
                     let decouple_chance = force.norm() * SOAP_DECOUPLE_COEFF;
                     if rng.random::<f32>() < decouple_chance {
@@ -341,35 +338,6 @@ pub async fn run(viewer: &mut TestbedViewer) -> anyhow::Result<()> {
                 }
             }
             soap_cells.retain(|cell| !cell.dissolved);
-
-            if steps % 20 == 0 {
-                let mut detached_count = 0;
-                let mut fastest: Option<(usize, f32)> = None;
-                for (i, cell) in soap_cells.iter().enumerate() {
-                    if cell.attached {
-                        continue;
-                    }
-                    detached_count += 1;
-                    let speed = world
-                        .colliders
-                        .get(cell.collider_handle)
-                        .and_then(|c| c.parent())
-                        .and_then(|body_handle| world.bodies.get(body_handle))
-                        .map(|body| {
-                            let v = body.linvel();
-                            (v.x * v.x + v.y * v.y).sqrt()
-                        })
-                        .unwrap_or(0.0);
-                    if fastest.map_or(true, |(_, s)| speed > s) {
-                        fastest = Some((i, speed));
-                    }
-                }
-                if let Some((i, speed)) = fastest {
-                    println!(
-                        "detached cells: {detached_count}, fastest: cell {i} at {speed:.2} m/s"
-                    );
-                }
-            }
         }
         steps += 1;
     }
